@@ -1,3 +1,4 @@
+import json
 from mininet.topo import Topo
 from mininet.net import Mininet
 from mininet.node import RemoteController, OVSKernelSwitch
@@ -61,20 +62,41 @@ class FourZoneTopo(Topo):
 
 def run_experiment():
     topo = FourZoneTopo()
-    # 连接到 Ryu 控制器 (假设控制器运行在本地 6633)
     net = Mininet(topo=topo, controller=RemoteController, switch=OVSKernelSwitch)
-    
     net.start()
-    print("\n=== Network Simulation Started ===")
-    print("Dump node info to check CVE assignment:")
     
-    # 打印几个节点验证数据是否加载成功
+    print("\n=== 1. Exporting Network State for Controller ===")
+    nodes_data = []
     for host in net.hosts:
-        if 'dmz' in host.name or 'office_1' == host.name:
-            print(f"Host: {host.name} | Value: {host.params.get('impact_val')} | Cost: {host.params.get('deploy_cost')} | CVE: {host.params.get('cve_id')}")
+        # 跳过 switch 和 controller
+        if 's' in host.name or 'c' in host.name: continue
+        
+        node_info = {
+            'name': host.name,
+            'ip': host.IP(),
+            'impact': host.params.get('impact_val', 0),
+            'prob': host.params.get('exploit_prob', 0),
+            'cost': host.params.get('deploy_cost', 0)
+        }
+        nodes_data.append(node_info)
+    
+    # 保存到文件，供 honey_controller.py 读取
+    with open('network_state.json', 'w') as f:
+        json.dump(nodes_data, f, indent=4)
+    print("Saved network_state.json")
 
-    # 这里可以启动你的 AttackerAgent 脚本
-    # ...
+    print("\n=== 2. Setting up Attacker ===")
+    # 假设 office_1 是内鬼/攻击起点，或者你可以专门加一个 attacker host
+    attacker = net.get('office_1') 
+    
+    # 在后台启动攻击脚本 &
+    # 注意：确保所有 py 文件都在同级目录
+    print(f"Starting attacker script on {attacker.name}...")
+    attacker.cmd('python3 run_attacker_node.py > attacker.log 2>&1 &')
+
+    print("\n=== 3. Ready! Please start Ryu Controller now ===")
+    print("Run this command in another terminal:")
+    print("ryu-manager honey_controller.py")
     
     CLI(net)
     net.stop()
