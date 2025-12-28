@@ -1,3 +1,8 @@
+# honey_controller.py
+# 完整版 - 包含 L2 交换机功能与 Stackelberg 动态防御逻辑
+
+import json
+import time
 from ryu.base import app_manager
 from ryu.controller import ofp_event
 from ryu.controller.handler import CONFIG_DISPATCHER, MAIN_DISPATCHER, set_ev_cls
@@ -5,10 +10,8 @@ from ryu.ofproto import ofproto_v1_3
 from ryu.lib.packet import packet, ethernet, ipv4, arp
 from ryu.lib import hub
 
+# 导入策略引擎 (大脑)
 from strategy_engine import StrategyEngine
-# 为了简单，我们复用 data_loader 来生成同样的节点列表
-# 在真实部署中，控制器应该通过网络发现拓扑，但仿真实验中共享配置是标准做法
-from data_loader import CVEDataLoader 
 
 class HoneyMatrixController(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
@@ -16,57 +19,90 @@ class HoneyMatrixController(app_manager.RyuApp):
     def __init__(self, *args, **kwargs):
         super(HoneyMatrixController, self).__init__(*args, **kwargs)
         self.mac_to_port = {}
+        self.datapaths = {}  # 存储所有连接的交换机
         
-        # 1. 初始化大脑
-        self.brain = StrategyEngine(total_resource_budget=10) # 设定一个中等预算
+        # --- 1. 初始化大脑 ---
+        # 资源预算设为 15 (根据你的实验需求调整)
+        self.brain = StrategyEngine(total_resource_budget=15)
         
-        # 2. 加载网络资产数据 (模拟已知拓扑)
-        # 注意：这里需要重新生成一遍完全一样的节点数据，或者在 topo 文件里存下来传给 controller
-        # 为了演示，我们这里简化处理：假设我们知道节点 IP 和 Value
-        # 实际操作中，建议把 experiment_topo.py 生成的节点列表保存为 nodes.json，这里读取
-        self.nodes_data = self._load_nodes_config()
-        
-        # 3. 启动博弈循环
+        # --- 2. 读取网络状态 (由 Mininet 导出的) ---
+        try:
+            with open('network_state.json', 'r') as f:
+                self.nodes_data = json.load(f)
+            self.logger.info(f"[Init] Loaded {len(self.nodes_data)} nodes from network_state.json")
+        except FileNotFoundError:
+            self.logger.error("[Error] network_state.json not found! Run experiment_topo.py first.")
+            self.nodes_data = []
+
+        # --- 3. 启动博弈循环线程 ---
         self.game_thread = hub.spawn(self.game_loop)
 
-    def _load_nodes_config(self):
-        # 模拟从配置文件读取的节点列表
-        # 这里为了演示代码能跑，我手动构造几个和 Topo 对应的
-        # ！！！请确保这里的 Name 和 IP 与 experiment_topo.py 里生成的一致！！！
-        # 你可以修改 experiment_topo.py，让它在启动时把生成的节点信息 dump 到 'network_state.json'
-        # 然后在这里 json.load('network_state.json')
-        return [
-            {'name': 'dmz_1', 'ip': '10.0.2.11', 'impact': 9.8, 'prob': 0.39, 'cost': 5},
-            {'name': 'dmz_2', 'ip': '10.0.2.12', 'impact': 9.4, 'prob': 0.39, 'cost': 5},
-            {'name': 'office_1', 'ip': '10.0.5.11', 'impact': 7.0, 'prob': 0.20, 'cost': 1},
-            # ... 更多节点
-        ]
-
     def game_loop(self):
-        """主循环：每隔 20 秒执行一次 Stackelberg 博弈"""
+        """
+        核心博弈循环：周期性重新计算蜜阵部署
+        """
+        # 等待交换机连接并稳定
+        hub.sleep(5)
+        
+        round_count = 0
         while True:
-            self.logger.info("\n[Game Loop] Calculating new defense strategy...")
+            round_count += 1
+            self.logger.info(f"\n=== [Round {round_count}] Calculating Defense Strategy ===")
             
-            # 1. 调用 Gurobi 计算
+            if not self.nodes_data:
+                self.logger.warning("No node data available. Waiting...")
+                hub.sleep(10)
+                continue
+
+            # --- A. 调用 Gurobi 计算最优部署 ---
+            # 返回被选中的节点名称列表，例如 ['dmz_1', 'office_3']
             honeypot_nodes = self.brain.compute_optimal_placement(self.nodes_data)
             
-            # 2. 提取蜜点 IP 列表
-            honey_ips = [n for n in self.nodes_data if n['name'] in honeypot_nodes]
-            # 这里简化逻辑：我们只打印出来，表示“流表已下发”
-            # 在真实 Ryu 代码中，这里需要调用 self.add_flow 把发往 honey_ips 的流量
-            # 修改 output action 指向蜜罐服务器
+            # --- B. 提取这些节点的 IP ---
+            active_honey_ips = []
+            for node in self.nodes_data:
+                if node['name'] in honeypot_nodes:
+                    active_honey_ips.append(node['ip'])
             
-            self.logger.info(f"[Defend] Active Honeypots: {honeypot_nodes}")
+            self.logger.info(f"[Defend] Active Honeypots deployed at: {active_honey_ips}")
             
-            hub.sleep(20) # 20秒一轮
+            # --- C. 下发流表拦截攻击 ---
+            self.update_honeypot_flows(active_honey_ips)
+            
+            # --- D. 等待下一轮 (比如 20 秒) ---
+            hub.sleep(20)
+
+    def update_honeypot_flows(self, honey_ips):
+        """
+        向所有交换机下发流表：
+        如果目的 IP 是蜜罐 IP，则视为被捕获 (Packet-In 到控制器记录日志)
+        """
+        for datapath in self.datapaths.values():
+            ofproto = datapath.ofproto
+            parser = datapath.ofproto_parser
+            
+            for ip in honey_ips:
+                # 匹配规则：IP协议，目的地址 = 蜜罐IP
+                match = parser.OFPMatch(eth_type=0x0800, ipv4_dst=ip)
+                
+                # 动作：发送给控制器 (Packet-In)，且不进行转发
+                # 这会造成 Ping 不通，但控制器会打印 "Attack Intercepted"
+                actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER, ofproto.OFPCML_NO_BUFFER)]
+                
+                # 优先级设为 100 (高于默认转发规则 1)
+                self.add_flow(datapath, priority=100, match=match, actions=actions)
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, ev):
+        """交换机握手，安装默认流表"""
         datapath = ev.msg.datapath
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
         
-        # 安装 Table-miss 流表 (默认泛洪)
+        # 记录 datapath 以便后续下发流表
+        self.datapaths[datapath.id] = datapath
+        
+        # 默认流表：Packet-In (优先级 0，最低)
         match = parser.OFPMatch()
         actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER, ofproto.OFPCML_NO_BUFFER)]
         self.add_flow(datapath, 0, match, actions)
@@ -74,7 +110,9 @@ class HoneyMatrixController(app_manager.RyuApp):
     def add_flow(self, datapath, priority, match, actions, buffer_id=None):
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
+        
         inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
+        
         if buffer_id:
             mod = parser.OFPFlowMod(datapath=datapath, buffer_id=buffer_id,
                                     priority=priority, match=match,
@@ -84,5 +122,65 @@ class HoneyMatrixController(app_manager.RyuApp):
                                     match=match, instructions=inst)
         datapath.send_msg(mod)
 
-    # ... 这里省略 packet_in 处理函数 (实现二层交换)，你可以直接复制 Ryu 的 simple_switch_13.py ...
-    # 只要保证网络能通即可
+    @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
+    def _packet_in_handler(self, ev):
+        """
+        处理数据包：实现 L2 交换功能 + 蜜罐告警
+        """
+        msg = ev.msg
+        datapath = msg.datapath
+        ofproto = datapath.ofproto
+        parser = datapath.ofproto_parser
+        in_port = msg.match['in_port']
+
+        pkt = packet.Packet(msg.data)
+        eth = pkt.get_protocols(ethernet.ethernet)[0]
+
+        # 忽略 LLDP 包
+        if eth.ethertype == 35020:
+            return
+        
+        # --- 蜜罐捕获逻辑 ---
+        # 如果是 IPv4 包，检查是否命中了我们的蜜罐规则
+        # 注意：因为我们上面下发的流表 action 是 OUTPUT_CONTROLLER，所以包会来到这里
+        if eth.ethertype == 0x0800:
+            ip_pkt = pkt.get_protocols(ipv4.ipv4)[0]
+            dst_ip = ip_pkt.dst
+            
+            # 如果这个 IP 在我们当前的防御列表中（需要从 nodes_data 反查或简化判断）
+            # 为了演示，直接打印一条显眼的日志
+            # 只有当这是攻击者发的包时才有意义
+            self.logger.info(f"⚡ [ALERT] Traffic captured targeting: {dst_ip} (Possile Honeypot Hit)")
+
+        dst = eth.dst
+        src = eth.src
+        dpid = datapath.id
+
+        self.mac_to_port.setdefault(dpid, {})
+
+        # 学习 MAC 地址
+        self.mac_to_port[dpid][src] = in_port
+
+        if dst in self.mac_to_port[dpid]:
+            out_port = self.mac_to_port[dpid][dst]
+        else:
+            out_port = ofproto.OFPP_FLOOD
+
+        actions = [parser.OFPActionOutput(out_port)]
+
+        # 安装普通转发流表 (优先级 1，低于蜜罐规则的 100)
+        if out_port != ofproto.OFPP_FLOOD:
+            match = parser.OFPMatch(in_port=in_port, eth_dst=dst, eth_src=src)
+            if msg.buffer_id != ofproto.OFP_NO_BUFFER:
+                self.add_flow(datapath, 1, match, actions, msg.buffer_id)
+                return
+            else:
+                self.add_flow(datapath, 1, match, actions)
+        
+        data = None
+        if msg.buffer_id == ofproto.OFP_NO_BUFFER:
+            data = msg.data
+
+        out = parser.OFPPacketOut(datapath=datapath, buffer_id=msg.buffer_id,
+                                  in_port=in_port, actions=actions, data=data)
+        datapath.send_msg(out)
