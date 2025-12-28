@@ -1,6 +1,9 @@
 # honey_controller.py
 # 完整版 - 包含 L2 交换机功能与 Stackelberg 动态防御逻辑
-
+import collections
+import collections.abc
+# 修复 Python 3.10 下 collections 缺少 MutableMapping 的问题
+collections.MutableMapping = collections.abc.MutableMapping
 import json
 import time
 from ryu.base import app_manager
