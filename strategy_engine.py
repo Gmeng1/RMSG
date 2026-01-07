@@ -1,101 +1,143 @@
+# strategy_engine.py
 import gurobipy as gp
 from gurobipy import GRB
+import random
+import numpy as np
 
 class StrategyEngine:
-    def __init__(self, total_resource_budget=20):
-        """
-        初始化策略引擎
-        :param total_resource_budget: 系统总资源上限 (模拟 CPU/内存限制)
-                                      假设高交互蜜罐消耗5，低交互消耗1，总共只有20单位。
-        """
-        self.budget = total_resource_budget
-        print(f"[StrategyEngine] Initialized with Resource Budget: {self.budget}")
+    def __init__(self, cpu_limit=64, mem_limit=64, disk_limit=500):
+        self.cpu_limit = cpu_limit
+        self.mem_limit = mem_limit
+        self.disk_limit = disk_limit
 
-    def compute_optimal_placement(self, nodes_data):
-        """
-        使用 Gurobi 求解最优蜜阵部署策略
-        :param nodes_data: 包含节点信息的列表，格式如下:
-                           [{'name': 'dmz_1', 'impact': 9.8, 'prob': 0.39, 'cost': 5}, ...]
-        :return: 选中的节点名称列表
-        """
-        # 1. 创建模型
-        model = gp.Model("HoneyMatrix_Deployment")
-        model.setParam('OutputFlag', 0)  # 关闭 Gurobi 繁杂的输出日志
-
-        # 2. 创建变量
-        # x[i] = 1 表示在第 i 个节点部署蜜点，0 表示不部署
-        x = model.addVars(len(nodes_data), vtype=GRB.BINARY, name="Deploy")
-
-        # 3. 设置目标函数 (Objective Function)
-        # 我们希望最大化：(节点价值 * 攻击概率) 的总和
-        # 解释：优先保护那些“既重要又容易被黑”的节点
-        obj_expr = gp.LinExpr()
-        for i, node in enumerate(nodes_data):
-            # 收益 = Impact Score * Exploit Probability
-            # 这符合 Stackelberg 博弈中防御者试图最大化期望效用的逻辑
-            utility = node['impact'] * node['prob']
-            obj_expr += x[i] * utility
+    def compute_milp(self, nodes_data):
+        """本文提出的 MILP 模型 """
+        model = gp.Model("MILP_Model")
+        model.setParam('OutputFlag', 0)
+        x = model.addVars(len(nodes_data), vtype=GRB.BINARY)
+        obj = gp.LinExpr()
+        for i, n in enumerate(nodes_data):
+            obj += x[i] * (n['impact'] * n.get('prob', 0.5))
+        model.setObjective(obj, GRB.MAXIMIZE)
         
-        model.setObjective(obj_expr, GRB.MAXIMIZE)
-
-        # 4. 设置约束条件 (Constraints)
-        # 资源约束：所有部署节点的 Cost 之和 <= 总预算
-        cost_expr = gp.LinExpr()
-        for i, node in enumerate(nodes_data):
-            cost_expr += x[i] * node['cost']
+        # 多维约束
+        model.addConstr(gp.quicksum(x[i] * n['req_cpu'] for i, n in enumerate(nodes_data)) <= self.cpu_limit)
+        model.addConstr(gp.quicksum(x[i] * n['req_mem'] for i, n in enumerate(nodes_data)) <= self.mem_limit)
+        model.addConstr(gp.quicksum(x[i] * n['req_disk'] for i, n in enumerate(nodes_data)) <= self.disk_limit)
         
-        model.addConstr(cost_expr <= self.budget, "Resource_Limit")
+        model.optimize()
+        return [nodes_data[i]['name'] for i in range(len(nodes_data)) if x[i].x > 0.5] if model.status == GRB.OPTIMAL else []
 
-        # 区域约束 (可选)：比如要求 DMZ 区至少部署 1 个蜜点
-        # 这里先注释掉，等跑通后再加
-        # dmz_indices = [i for i, n in enumerate(nodes_data) if 'dmz' in n['name']]
-        # model.addConstr(sum(x[i] for i in dmz_indices) >= 1, "Min_DMZ_Defense")
+    def compute_random(self, nodes_data):
+        """随机部署"""
+        selected = []
+        indices = list(range(len(nodes_data)))
+        random.shuffle(indices)
+        c, m, d = 0, 0, 0
+        for i in indices:
+            n = nodes_data[i]
+            if c + n['req_cpu'] <= self.cpu_limit and m + n['req_mem'] <= self.mem_limit and d + n['req_disk'] <= self.disk_limit:
+                selected.append(n['name'])
+                c += n['req_cpu']; m += n['req_mem']; d += n['req_disk']
+        return selected
 
-        # 5. 开始求解
+    def compute_fair(self, nodes_data):
+        """公平分配 (均匀尝试覆盖所有节点) [cite: 558]"""
+        # 公平分配在离散部署中表现为：按区域顺序轮流分配，直到资源耗尽
+        selected = []
+        c, m, d = 0, 0, 0
+        # 将节点按区域均匀打乱，模拟“雨露均沾”
+        fair_queue = sorted(nodes_data, key=lambda x: x['name']) 
+        for n in fair_queue:
+            if c + n['req_cpu'] <= self.cpu_limit and m + n['req_mem'] <= self.mem_limit and d + n['req_disk'] <= self.disk_limit:
+                selected.append(n['name'])
+                c += n['req_cpu']; m += n['req_mem']; d += n['req_disk']
+        return selected
+
+    def compute_maxmin(self, nodes_data):
+        """Maxmin 策略 (优先保护最高风险节点) [cite: 145]"""
+        # 按照风险（Impact * Prob）从高到低排序，尝试消除最大威胁
+        sorted_nodes = sorted(nodes_data, key=lambda x: x['impact'] * x.get('prob', 0.5), reverse=True)
+        selected = []
+        c, m, d = 0, 0, 0
+        for n in sorted_nodes:
+            if c + n['req_cpu'] <= self.cpu_limit and m + n['req_mem'] <= self.mem_limit and d + n['req_disk'] <= self.disk_limit:
+                selected.append(n['name'])
+                c += n['req_cpu']; m += n['req_mem']; d += n['req_disk']
+        return selected
+
+    def compute_ga(self, nodes_data, generations=50, pop_size=20):
+        """遗传算法 (GA) 简化版"""
+        num_nodes = len(nodes_data)
+        # 初始化种群
+        pop = [np.random.randint(0, 2, num_nodes) for _ in range(pop_size)]
+        
+        def fitness(ind):
+            c = sum(ind[i] * nodes_data[i]['req_cpu'] for i in range(num_nodes))
+            m = sum(ind[i] * nodes_data[i]['req_mem'] for i in range(num_nodes))
+            d = sum(ind[i] * nodes_data[i]['req_disk'] for i in range(num_nodes))
+            if c > self.cpu_limit or m > self.mem_limit or d > self.disk_limit:
+                return 0
+            return sum(ind[i] * (nodes_data[i]['impact'] * nodes_data[i].get('prob', 0.5)) for i in range(num_nodes))
+
+        for _ in range(generations):
+            pop = sorted(pop, key=fitness, reverse=True)
+            new_pop = pop[:5] # 精英保留
+            while len(new_pop) < pop_size:
+                p1, p2 = random.choices(pop[:10], k=2)
+                cp = random.randint(1, num_nodes-1)
+                child = np.concatenate([p1[:cp], p2[cp:]]) # 交叉
+                if random.random() < 0.1: child[random.randint(0, num_nodes-1)] ^= 1 # 变异
+                new_pop.append(child)
+            pop = new_pop
+        
+        best_ind = max(pop, key=fitness)
+        return [nodes_data[i]['name'] for i in range(num_nodes) if best_ind[i] == 1]
+    
+    def compute_economic_milp(self, nodes_data, cost_factor=1.0):
+        """
+        实验B专用：基于经济效用的 MILP 模型
+        目标：最大化 (拦截收益 - 部署成本 - 漏防损失)
+        """
+        model = gp.Model("Economic_Stackelberg")
+        model.setParam('OutputFlag', 0)
+
+        x = model.addVars(len(nodes_data), vtype=GRB.BINARY, name="x")
+
+        obj = gp.LinExpr()
+        for i, n in enumerate(nodes_data):
+            # 基础参数
+            prob = n.get('prob', 0.5)
+            impact = n['impact']
+            # 假设：部署成本与该节点的资源消耗成正比 (模拟真实云环境计费)
+            # cost_factor 是我们会动态调整的实验变量
+            deploy_cost = (n['req_cpu'] * 1.0 + n['req_mem'] * 0.5) * cost_factor
+            
+            # 收益项拆解：
+            # 1. 成功拦截的收益 (Reward) = Impact * Prob
+            # 2. 部署的成本 (Cost) = deploy_cost
+            # 3. 漏防的损失 (Loss) = Impact * Prob
+            
+            # 目标函数推导：
+            # 如果部署 (x=1): 获得 (Reward - Cost)
+            # 如果不部署 (x=0): 承受 (-Loss)
+            # 合并项系数 = (Reward - Cost) - (-Loss) = Reward + Loss - Cost
+            # 常数项 = -Loss
+            
+            term = x[i] * (impact * prob * 2 - deploy_cost) - (impact * prob)
+            obj += term
+            
+        model.setObjective(obj, GRB.MAXIMIZE)
+        
+        # 这里我们可以选择是否移除硬性资源约束
+        # 为了体现纯粹的“经济博弈”，建议移除硬约束，让金钱决定一切
+        # 或者保留极宽的约束作为物理底线
+        
         model.optimize()
 
-        # 6. 解析结果
-        selected_nodes = []
+        selected = []
         if model.status == GRB.OPTIMAL:
-            total_value_secured = 0
-            total_cost_spent = 0
-            
-            for i, node in enumerate(nodes_data):
-                if x[i].x > 0.5:  # 如果变量值为 1
-                    selected_nodes.append(node['name'])
-                    total_value_secured += node['impact']
-                    total_cost_spent += node['cost']
-            
-            print(f"\n[Gurobi] Optimization Solved!")
-            print(f"   - Budget: {self.budget} | Spent: {total_cost_spent}")
-            print(f"   - Total Protected Value: {total_value_secured:.2f}")
-            print(f"   - Deployed on {len(selected_nodes)} nodes: {selected_nodes}")
-            
-            return selected_nodes
-        else:
-            print("[Gurobi] No optimal solution found.")
-            return []
-
-# --- 单元测试 (Unit Test) ---
-# 这部分代码让你不用启动 Mininet 也能测试 Gurobi 逻辑是否正确
-if __name__ == "__main__":
-    # 模拟从 Mininet 提取的数据
-    mock_data = [
-        {'name': 'dmz_1',    'impact': 9.8, 'prob': 0.39, 'cost': 5}, # 高价值，昂贵
-        {'name': 'dmz_2',    'impact': 9.4, 'prob': 0.39, 'cost': 5},
-        {'name': 'office_1', 'impact': 7.0, 'prob': 0.20, 'cost': 1}, # 低价值，便宜
-        {'name': 'office_2', 'impact': 6.5, 'prob': 0.20, 'cost': 1},
-        {'name': 'ops_1',    'impact': 8.5, 'prob': 0.30, 'cost': 5},
-    ]
-
-    # 测试场景：资源非常紧张 (预算只有 6)
-    # 预期结果：应该会选 office_1 (1) + office_2 (1)，也许再加一个其他的？
-    # 或者如果 dmz_1 的性价比极高，可能只选 dmz_1 (5)。
-    # 让我们看看 AI 到底怎么算。
-    print("--- Test Case: Low Budget (6) ---")
-    engine = StrategyEngine(total_resource_budget=6)
-    engine.compute_optimal_placement(mock_data)
-
-    print("\n--- Test Case: High Budget (15) ---")
-    engine_high = StrategyEngine(total_resource_budget=15)
-    engine_high.compute_optimal_placement(mock_data)
+            for i, n in enumerate(nodes_data):
+                if x[i].x > 0.5:
+                    selected.append(n['name'])
+        return selected
