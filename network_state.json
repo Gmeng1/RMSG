@@ -1,0 +1,74 @@
+[
+    {
+        "name": "biz_1",
+        "ip": "10.0.4.11",
+        "impact": 7.5,
+        "prob": 0.16,
+        "req_cpu": 2,
+        "req_mem": 4,
+        "true_att_cost": 2.0
+    },
+    {
+        "name": "biz_2",
+        "ip": "10.0.4.12",
+        "impact": 8.6,
+        "prob": 0.39,
+        "req_cpu": 2,
+        "req_mem": 4,
+        "true_att_cost": 2.0
+    },
+    {
+        "name": "biz_3",
+        "ip": "10.0.4.13",
+        "impact": 8.8,
+        "prob": 0.28,
+        "req_cpu": 2,
+        "req_mem": 4,
+        "true_att_cost": 2.0
+    },
+    {
+        "name": "biz_4",
+        "ip": "10.0.4.14",
+        "impact": 8.8,
+        "prob": 0.28,
+        "req_cpu": 2,
+        "req_mem": 4,
+        "true_att_cost": 2.0
+    },
+    {
+        "name": "biz_5",
+        "ip": "10.0.4.15",
+        "impact": 8.2,
+        "prob": 0.39,
+        "req_cpu": 2,
+        "req_mem": 4,
+        "true_att_cost": 2.0
+    },
+    {
+        "name": "dmz_1",
+        "ip": "10.0.2.11",
+        "impact": 9.9,
+        "prob": 0.31,
+        "req_cpu": 4,
+        "req_mem": 8,
+        "true_att_cost": 2.0
+    },
+    {
+        "name": "dmz_2",
+        "ip": "10.0.2.12",
+        "impact": 9.3,
+        "prob": 0.39,
+        "req_cpu": 4,
+        "req_mem": 8,
+        "true_att_cost": 2.0
+    },
+    {
+        "name": "dmz_3",
+        "ip": "10.0.2.13",
+        "impact": 9.8,
+        "prob": 0.39,
+        "req_cpu": 4,
+        "req_mem": 8,
+        "true_att_cost": 2.0
+    }
+]
