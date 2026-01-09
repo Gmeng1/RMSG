@@ -85,6 +85,7 @@ def run_experiment():
             'prob': host.params.get('exploit_prob', 0),
             'req_cpu': host.params.get('req_cpu', 0),
             'req_mem': host.params.get('req_mem', 0),
+            'req_disk': host.params.get('req_disk', 0),
             'true_att_cost': host.params.get('deploy_cost', 0)
         }
         nodes_data.append(node_info)
