@@ -1,5 +1,6 @@
 import json
 import os
+import random
 from mininet.topo import Topo
 from mininet.net import Mininet
 from mininet.node import RemoteController, OVSKernelSwitch
@@ -41,7 +42,10 @@ class FourZoneTopo(Topo):
             # 从 data_loader 获取一个随机漏洞配置
             # 注意：prefix (如 "dmz") 会作为 zone_type 传入，从而决定 CPU/Mem 消耗
             vuln_info = self.loader.get_random_vuln(prefix, min_score, max_score)
-            
+            cpu_val = vuln_info.get('req_cpu', 1.0)
+            mem_val = vuln_info.get('req_mem', 1.0)
+            base_disk = cpu_val * 10 
+            disk_val = vuln_info.get('req_disk', base_disk * random.uniform(0.8, 1.2))
             # 将属性保存在 Mininet 节点的 params 中
             node_params = {
                 'ip': f'10.0.{switch[1]}.{i+10}', 
@@ -51,6 +55,7 @@ class FourZoneTopo(Topo):
                 # [Feature] 添加资源需求，供控制器监控
                 'req_cpu': vuln_info.get('req_cpu', 1.0),
                 'req_mem': vuln_info.get('req_mem', 1.0),
+                'req_disk': int(disk_val),  # <--- 写入生成的合理数据
                 # 攻击成本 (true_att_cost) 暂时用 deploy_cost 模拟，如果 JSON 里没有就默认 2.0
                 'deploy_cost': vuln_info.get('deploy_cost', 2.0),
                 'cve_id': vuln_info['cve_id']
