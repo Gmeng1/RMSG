@@ -112,11 +112,19 @@ class HoneyMatrixController(app_manager.RyuApp):
             hub.sleep(5) # 采样间隔
 
     def _load_network_state(self):
-        if not os.path.exists('network_state.json'): return False
+        json_path = "/home/gjj/RMSG/network_state.json"
+        
+        if not os.path.exists(json_path):
+            # 打印出来它到底在找哪个文件，方便调试
+            # print(f"[Debug] Controller looking for: {json_path}")
+            return False
+            
         try:
-            with open('network_state.json', 'r') as f:
+            with open(json_path, 'r') as f:
                 data = json.load(f)
                 if not data: return False
                 self.nodes_data = data
                 return True
-        except: return False
+        except Exception as e:
+            print(f"[Controller] JSON load error: {e}")
+            return False
