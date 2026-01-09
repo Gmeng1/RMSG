@@ -115,8 +115,8 @@ class HoneyMatrixController(app_manager.RyuApp):
         json_path = "/home/gjj/RMSG/network_state.json"
         
         if not os.path.exists(json_path):
-            # 打印出来它到底在找哪个文件，方便调试
-            # print(f"[Debug] Controller looking for: {json_path}")
+            # 调试信息：让你确信它没死，只是在找文件
+            print(f"[Controller] 正在寻找文件: {json_path} (未找到)") 
             return False
             
         try:
