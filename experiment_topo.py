@@ -1,4 +1,5 @@
 import json
+import os
 from mininet.topo import Topo
 from mininet.net import Mininet
 from mininet.node import RemoteController, OVSKernelSwitch
@@ -84,9 +85,15 @@ def run_experiment():
         nodes_data.append(node_info)
     
     # 保存状态文件
-    with open('network_state.json', 'w') as f:
+    abs_path = "/home/gjj/RMSG/network_state.json"
+    
+    print(f"\n[Mininet] Writing state to: {abs_path}")
+    with open(abs_path, 'w') as f:
         json.dump(nodes_data, f, indent=4)
     print("Saved network_state.json")
+
+    os.chmod(abs_path, 0o666)
+    print(f"[Mininet] Permissions set to 666. Saved successfully.")
 
     print("\n=== 2. Setting up Attacker ===")
     # 假设 office_1 是攻击者起点
