@@ -14,7 +14,7 @@ from strategy_engine import StrategyEngine
 # ==========================================
 EXPERIMENT_MODE = 'Proposed' 
 LOG_FILE = f"/home/gjj/RMSG/mininet_metrics_{EXPERIMENT_MODE}.csv" # 绝对路径
-STATE_FILE = "/tmp/network_state.json" # 绝对路径 (Mininet生成的那个)
+STATE_FILE = "/home/gjj/RMSG/network_state.json" # 绝对路径 (Mininet生成的那个)
 CPU_LIMIT = 16.0
 MEM_LIMIT = 32.0
 
