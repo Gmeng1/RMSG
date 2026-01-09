@@ -92,8 +92,8 @@ def run_experiment():
         json.dump(nodes_data, f, indent=4)
     print("Saved network_state.json")
 
-    os.chmod(abs_path, 0o666)
-    print(f"[Mininet] Permissions set to 666. Saved successfully.")
+    os.chmod(abs_path, 0o777)
+    print(f"[Mininet] Permissions set to 777. Saved successfully.")
 
     print("\n=== 2. Setting up Attacker ===")
     # 假设 office_1 是攻击者起点
