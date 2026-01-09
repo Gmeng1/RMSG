@@ -13,8 +13,9 @@ from strategy_engine import StrategyEngine
 # 🛠️ 实验配置
 # ==========================================
 EXPERIMENT_MODE = 'Proposed' 
-LOG_FILE = f"/home/gjj/RMSG/mininet_metrics_{EXPERIMENT_MODE}.csv" # 绝对路径
-STATE_FILE = "/home/gjj/RMSG/network_state.json" # 绝对路径 (Mininet生成的那个)
+# 请务必确认这个绝对路径是你 Mininet 生成文件的位置
+STATE_FILE = "/home/gjj/RMSG/network_state.json" 
+LOG_FILE = f"mininet_metrics_{EXPERIMENT_MODE}.csv"
 CPU_LIMIT = 16.0
 MEM_LIMIT = 32.0
 
@@ -22,20 +23,20 @@ class HoneyMatrixController(app_manager.RyuApp):
     def __init__(self, *args, **kwargs):
         super(HoneyMatrixController, self).__init__(*args, **kwargs)
         
-        # 强制刷新打印缓冲区
+        # 1. 强制刷新打印缓冲区 (让你能实时看到每一行日志)
         sys.stdout.reconfigure(line_buffering=True)
         
-        print(f"\n[Controller] >>> 实验启动: 模式={EXPERIMENT_MODE} <<<")
-        print(f"[Controller] 监控目标文件: {STATE_FILE}")
+        print(f"\n[Init] >>> 控制器启动 <<<")
+        print(f"[Init] 监控文件: {STATE_FILE}")
         
-        # 初始化大脑
         self.brain = StrategyEngine(cpu_limit=CPU_LIMIT, mem_limit=MEM_LIMIT, disk_limit=500)
         self.nodes_data = []
         
-        # 初始化 CSV
+        # 2. 初始化 CSV
         self._init_csv()
 
-        # 启动主循环
+        # 3. 启动主循环
+        print("[Init] 正在启动监控线程...")
         self.monitor_thread = hub.spawn(self.monitor_loop)
 
     def _init_csv(self):
@@ -45,68 +46,99 @@ class HoneyMatrixController(app_manager.RyuApp):
                 writer.writerow(["time", "round", "mode", "cpu_used", "mem_used", "cpu_limit", "mem_limit", "value_protected"])
                 f.flush()
                 os.fsync(f.fileno())
-            print("[Controller] CSV 表头已写入。")
+            print("[Init] CSV 表头写入成功。")
         except Exception as e:
-            print(f"[Controller] !!! CSV 创建失败: {e}")
+            print(f"[Init] ❌ CSV 创建失败: {e}")
 
     def monitor_loop(self):
-        print("[Controller] 监控线程已启动 (Thread Started)")
-        hub.sleep(2) # 等待 Mininet 准备好
+        print("[Loop] 线程已运行，等待 2s...")
+        hub.sleep(2) 
         
         round_id = 0
         while True:
-            # >>>>>>>> 🔴 超级防崩溃外壳 (开始) <<<<<<<<
+            # >>>>>>>> 🛡️ 绝对防崩溃外壳 (Start) <<<<<<<<
             try:
                 round_id += 1
-                # print(f"--- Round {round_id} Start ---") # 调试用
+                print(f"\n--- [Round {round_id}] 开始 ---")
 
-                # 1. 读取网络状态
-                if not self._load_network_state():
-                    # print(f"[Controller] Round {round_id}: 等待文件 {STATE_FILE}...")
+                # Step 1: 读取文件 (带重试)
+                if not self._load_network_state_safe():
+                    print(f"[Round {round_id}] ⏳ 没读到文件，跳过本轮...")
                     hub.sleep(2)
                     continue
 
-                # 2. 计算策略
+                # Step 2: 计算策略
                 target_names = []
                 try:
+                    # print(f"[Round {round_id}] 调用策略引擎: {EXPERIMENT_MODE}")
                     if EXPERIMENT_MODE == 'Proposed':
                         target_names = self.brain.compute_milp(self.nodes_data)
                     elif EXPERIMENT_MODE == 'MaxMin':
                         target_names = self.brain.compute_maxmin(self.nodes_data)
                     else:
                         target_names = self.brain.compute_random(self.nodes_data)
-                except Exception as logic_error:
-                    print(f"[Controller] ⚠️ 策略计算出错: {logic_error}")
-                    print("[Controller] -> 降级为 Random 策略")
-                    target_names = self.brain.compute_random(self.nodes_data)
+                    
+                    # print(f"[Round {round_id}] 策略计算完成，选中 {len(target_names)} 个节点")
+                    
+                except Exception as logic_e:
+                    print(f"[Round {round_id}] ⚠️ 策略引擎内部报错: {logic_e}")
+                    # 只要报错，就用空列表，保证实验不崩
+                    target_names = []
 
-                # 3. 统计并写入
+                # Step 3: 写入 CSV
                 self._record_metrics(round_id, target_names)
                 
-                # 4. 睡眠 (关键步骤)
-                # print(f"[Controller] Round {round_id} 结束，准备休眠 5s...")
+                # Step 4: 休眠 (这就是你怀疑的地方)
+                print(f"[Round {round_id}] 本轮结束，准备休眠 5s...")
                 hub.sleep(5)
-                # print(f"[Controller] Round {round_id} 休眠结束，进入下一轮")
+                print(f"[Round {round_id}] 休眠醒来！准备进入下一轮...")
 
-            except BaseException as critical_error:
-                # 这里会捕获一切错误，包括 Ctrl+C 或者 线程崩溃
-                print(f"\n[Controller] 🛑 严重异常 (CRITICAL): {critical_error}")
-                print("[Controller] 尝试自动恢复，3秒后重试...\n")
+            except BaseException as critical_e:
+                # 它可以捕获所有错误，包括 SyntaxError, KeyError, 甚至 Gurobi Crash
+                print(f"\n[CRASH] 🛑 严重崩溃捕获: {critical_e}")
+                import traceback
+                traceback.print_exc() # 打印详细报错位置
+                print("[CRASH] 正在尝试复活线程，3秒后重试...\n")
                 hub.sleep(3)
-            # >>>>>>>> 🔴 超级防崩溃外壳 (结束) <<<<<<<<
+            # >>>>>>>> 🛡️ 绝对防崩溃外壳 (End) <<<<<<<<
+
+    def _load_network_state_safe(self):
+        """安全读取 JSON，防止文件正在被写入时读取导致崩溃"""
+        if not os.path.exists(STATE_FILE):
+            # print(f"[File] 文件不存在: {STATE_FILE}")
+            return False
+            
+        # 尝试 3 次读取，防止读到半截数据
+        for attempt in range(3):
+            try:
+                with open(STATE_FILE, 'r') as f:
+                    # 使用 f.read() 确保读到东西再解析
+                    content = f.read()
+                    if not content.strip(): 
+                        raise ValueError("Empty File")
+                    self.nodes_data = json.loads(content)
+                    return True
+            except (json.JSONDecodeError, ValueError) as e:
+                # print(f"[File] 读取冲突 (Attempt {attempt+1}): {e}")
+                hub.sleep(0.1) # 等 0.1 秒再试
+            except Exception as e:
+                print(f"[File] 未知读取错误: {e}")
+                return False
+        return False
 
     def _record_metrics(self, round_id, target_names):
-        cpu_used = 0.0
-        mem_used = 0.0
-        val_protected = 0.0
-        
-        for node in self.nodes_data:
-            if node['name'] in target_names:
-                cpu_used += node.get('req_cpu', 0) # 使用 get 防止报错
-                mem_used += node.get('req_mem', 0)
-                val_protected += node.get('impact', 0)
-
         try:
+            cpu_used = 0.0
+            mem_used = 0.0
+            val_protected = 0.0
+            
+            # 使用 .get() 防止 Key Error
+            for node in self.nodes_data:
+                if node['name'] in target_names:
+                    cpu_used += node.get('req_cpu', 0)
+                    mem_used += node.get('req_mem', 0)
+                    val_protected += node.get('impact', 0)
+
             with open(LOG_FILE, 'a', newline='') as f:
                 writer = csv.writer(f)
                 writer.writerow([
@@ -115,24 +147,8 @@ class HoneyMatrixController(app_manager.RyuApp):
                 ])
                 f.flush()
                 os.fsync(f.fileno())
-            print(f"[Controller] Round {round_id} ✅ 写入成功 | CPU: {cpu_used}/{CPU_LIMIT}")
+            
+            print(f"[CSV] ✅ Round {round_id} 数据已写入 (CPU: {cpu_used})")
+            
         except Exception as e:
-            print(f"[Controller] CSV 写入失败: {e}")
-
-    def _load_network_state(self):
-        if not os.path.exists(STATE_FILE): return False
-        try:
-            # 增加一个极短的重试，防止 Mininet 正在写文件时我们去读
-            for _ in range(3):
-                try:
-                    with open(STATE_FILE, 'r') as f:
-                        data = json.load(f)
-                        if data:
-                            self.nodes_data = data
-                            return True
-                except json.JSONDecodeError:
-                    # 文件可能为空或正在写入，等一下重试
-                    hub.sleep(0.1)
-                    continue
-            return False
-        except: return False
+            print(f"[CSV] ❌ 写入失败: {e}")
