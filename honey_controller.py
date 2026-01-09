@@ -45,9 +45,6 @@ class HoneyMatrixController(app_manager.RyuApp):
         self.monitor_thread = hub.spawn(self.monitor_loop)
 
     def monitor_loop(self):
-        print("[Controller] 等待 network_state.json 生成...")
-        hub.sleep(3) # 给 Mininet 一点时间
-        
         round_id = 0
         while True:
             round_id += 1
